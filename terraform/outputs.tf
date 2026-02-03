@@ -83,3 +83,18 @@ output "service_account"{
 output "deploy_region" {
   value = var.deploy_region
 }
+
+output "redis_host" {
+  description = "Memorystore Redis host"
+  value       = try(google_redis_instance.cache[0].host, "")
+}
+
+output "redis_port" {
+  description = "Memorystore Redis port"
+  value       = try(google_redis_instance.cache[0].port, 0)
+}
+
+output "vpc_connector" {
+  description = "Serverless VPC Access connector name"
+  value       = try(google_vpc_access_connector.redis[0].name, "")
+}

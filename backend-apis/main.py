@@ -33,14 +33,46 @@ import sys
 import firebase_admin
 from firebase_admin import credentials, auth
 from functools import wraps
+from typing import Optional
 
 firebase_admin.initialize_app()
 
 from opendataqna import get_all_databases,get_kgq,generate_sql,embed_sql,get_response,get_results,visualize
+from dbconnectors import firestoreconnector
+from utilities import USE_SESSION_HISTORY
+from utilities.cache import RedisCache, cache_key
 
 
 module_path = os.path.abspath(os.path.join('.'))
 sys.path.append(module_path)
+
+CACHE = RedisCache()
+
+
+def _ttl_seconds(env_name: str, default: int) -> int:
+    try:
+        return int(os.getenv(env_name, default))
+    except ValueError:
+        return default
+
+
+def _should_bypass_cache(envelope: Optional[dict] = None) -> bool:
+    header_value = request.headers.get("X-Cache-Bypass", "")
+    if str(header_value).strip().lower() in {"1", "true", "yes", "y", "on"}:
+        return True
+    cache_control = request.headers.get("Cache-Control", "")
+    if "no-cache" in cache_control.lower():
+        return True
+    if envelope:
+        payload_value = envelope.get("cache_bypass")
+        if str(payload_value).strip().lower() in {"1", "true", "yes", "y", "on"}:
+            return True
+    return False
+
+
+def _cache_log(message: str) -> None:
+    if os.getenv("CACHE_LOGGING", "").strip().lower() in {"1", "true", "yes", "y", "on"}:
+        log.info(message)
 
 
 def jwt_authenticated(func: Callable[..., int]) -> Callable[..., int]:
@@ -89,6 +121,13 @@ cors = CORS(app, resources={r"/*": {"origins": "*"}})
 # @jwt_authenticated
 def getBDList():
 
+    bypass_cache = _should_bypass_cache()
+    if CACHE.enabled() and not bypass_cache:
+        cached = CACHE.get_json("available_databases")
+        if cached is not None:
+            _cache_log("cache hit: available_databases")
+            return jsonify(cached)
+
     result,invalid_response=get_all_databases()
     
     if not invalid_response:
@@ -104,6 +143,13 @@ def getBDList():
                 "KnownDB" : "",
                 "Error":result
                 } 
+    if CACHE.enabled() and not bypass_cache and not invalid_response:
+        CACHE.set_json(
+            "available_databases",
+            responseDict,
+            _ttl_seconds("CACHE_TTL_METADATA_SECONDS", 3600),
+        )
+        _cache_log("cache set: available_databases")
     return jsonify(responseDict)
 
 
@@ -154,6 +200,20 @@ def getSQLResult():
     generated_sql = envelope.get('generated_sql')
     session_id = envelope.get('session_id')
 
+    bypass_cache = _should_bypass_cache(envelope)
+    cache_allowed = CACHE.enabled() and not bypass_cache
+    cache_payload = {
+        "user_grouping": user_grouping,
+        "generated_sql": generated_sql,
+        "user_question": user_question,
+    }
+    cache_id = cache_key("run_query", cache_payload)
+    if cache_allowed:
+        cached = CACHE.get_json(cache_id)
+        if cached is not None:
+            _cache_log("cache hit: run_query")
+            return jsonify(cached)
+
     result_df,invalid_response=get_results(user_grouping,generated_sql)
 
 
@@ -185,6 +245,13 @@ def getSQLResult():
                 "SessionID" : session_id,
                 "Error":result_df
                 } 
+    if cache_allowed and not invalid_response:
+        CACHE.set_json(
+            cache_id,
+            responseDict,
+            _ttl_seconds("CACHE_TTL_RESULTS_SECONDS", 300),
+        )
+        _cache_log("cache set: run_query")
     return jsonify(responseDict)
 
 
@@ -199,6 +266,14 @@ def getKnownSQL():
     
     user_grouping = envelope.get('user_grouping')
 
+    bypass_cache = _should_bypass_cache(envelope)
+    cache_allowed = CACHE.enabled() and not bypass_cache
+    cache_id = cache_key("known_sql", {"user_grouping": user_grouping})
+    if cache_allowed:
+        cached = CACHE.get_json(cache_id)
+        if cached is not None:
+            _cache_log("cache hit: get_known_sql")
+            return jsonify(cached)
 
     result,invalid_response=get_kgq(user_grouping)
     
@@ -215,6 +290,13 @@ def getKnownSQL():
                 "KnownSQL" : "",
                 "Error":result
                 } 
+    if cache_allowed and not invalid_response:
+        CACHE.set_json(
+            cache_id,
+            responseDict,
+            _ttl_seconds("CACHE_TTL_METADATA_SECONDS", 3600),
+        )
+        _cache_log("cache set: get_known_sql")
     return jsonify(responseDict)
 
 
@@ -231,6 +313,45 @@ async def generateSQL():
     user_grouping = envelope.get('user_grouping')
     session_id = envelope.get('session_id')
     user_id = envelope.get('user_id')
+    bypass_cache = _should_bypass_cache(envelope)
+    cache_allowed = CACHE.enabled() and not bypass_cache and bool(session_id)
+    cache_payload = {
+        "user_question": user_question,
+        "user_grouping": user_grouping,
+        "user_id": user_id,
+        "models": {
+            "embedder": Embedder_model,
+            "sql_builder": SQLBuilder_model,
+            "sql_checker": SQLChecker_model,
+            "sql_debugger": SQLDebugger_model,
+        },
+        "params": {
+            "run_debugger": RUN_DEBUGGER,
+            "debugging_rounds": DEBUGGING_ROUNDS,
+            "llm_validation": LLM_VALIDATION,
+            "num_table_matches": num_table_matches,
+            "num_column_matches": num_column_matches,
+            "table_similarity_threshold": table_similarity_threshold,
+            "column_similarity_threshold": column_similarity_threshold,
+            "example_similarity_threshold": example_similarity_threshold,
+            "num_sql_matches": num_sql_matches,
+        },
+    }
+    cache_id = cache_key("generate_sql", cache_payload)
+    if cache_allowed:
+        cached = CACHE.get_json(cache_id)
+        if cached is not None and cached.get("GeneratedSQL"):
+            _cache_log("cache hit: generate_sql")
+            generated_sql = cached["GeneratedSQL"]
+            if USE_SESSION_HISTORY:
+                firestoreconnector.log_chat(session_id, user_question, generated_sql, user_id)
+            responseDict = { 
+                            "ResponseCode" : 200, 
+                            "GeneratedSQL" : generated_sql,
+                            "SessionID" : session_id,
+                            "Error":""
+                            }
+            return jsonify(responseDict)
     generated_sql,session_id,invalid_response = await generate_sql(session_id,
                 user_question,
                 user_grouping,  
@@ -264,6 +385,13 @@ async def generateSQL():
                         "Error":generated_sql
                         }          
 
+    if cache_allowed and not invalid_response:
+        CACHE.set_json(
+            cache_id,
+            {"GeneratedSQL": generated_sql},
+            _ttl_seconds("CACHE_TTL_SQL_SECONDS", 900),
+        )
+        _cache_log("cache set: generate_sql")
     return jsonify(responseDict)
 
 

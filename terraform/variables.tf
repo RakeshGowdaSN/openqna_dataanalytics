@@ -152,3 +152,74 @@ variable "firebase_web_app_name" {
   description = "name of the firebase web app."
 }
 
+variable "redis_enabled" {
+  type        = bool
+  default     = true
+  description = "Whether to create a Memorystore for Redis instance and enable backend cache."
+}
+
+variable "redis_name" {
+  type        = string
+  default     = "opendataqna-cache"
+  description = "Name of the Memorystore for Redis instance."
+}
+
+variable "redis_region" {
+  type        = string
+  default     = "us-central1"
+  description = "Region for the Memorystore for Redis instance."
+}
+
+variable "redis_tier" {
+  type        = string
+  default     = "BASIC"
+  description = "Tier for Memorystore Redis. Options: BASIC or STANDARD_HA."
+}
+
+variable "redis_memory_size_gb" {
+  type        = number
+  default     = 1
+  description = "Memory size (GB) for Memorystore Redis."
+}
+
+variable "redis_reserved_ip_range" {
+  type        = string
+  default     = "10.8.0.0/29"
+  description = "Reserved IP range for Memorystore Redis."
+}
+
+variable "redis_network" {
+  type        = string
+  default     = "default"
+  description = "VPC network name for Memorystore Redis and VPC connector."
+}
+
+variable "vpc_connector_ip_cidr_range" {
+  type        = string
+  default     = "10.8.1.0/28"
+  description = "IP CIDR range for the Serverless VPC Access connector."
+}
+
+variable "cache_ttl_default_seconds" {
+  type        = number
+  default     = 300
+  description = "Default cache TTL in seconds."
+}
+
+variable "cache_ttl_metadata_seconds" {
+  type        = number
+  default     = 3600
+  description = "Cache TTL in seconds for metadata endpoints."
+}
+
+variable "cache_ttl_sql_seconds" {
+  type        = number
+  default     = 900
+  description = "Cache TTL in seconds for SQL generation."
+}
+
+variable "cache_ttl_results_seconds" {
+  type        = number
+  default     = 300
+  description = "Cache TTL in seconds for SQL query results."
+}

@@ -30,7 +30,10 @@ locals {
     "logging.googleapis.com",
     "monitoring.googleapis.com",
     "cloudbuild.googleapis.com",
-    "firestore.googleapis.com"
+    "firestore.googleapis.com",
+    "compute.googleapis.com",
+    "redis.googleapis.com",
+    "vpcaccess.googleapis.com"
   ]
 
 }

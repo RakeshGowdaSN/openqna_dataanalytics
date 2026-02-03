@@ -46,6 +46,7 @@ Open_Data_QnA/
 1. iam.tf - Handles implementation of all the necessary IAM roles to various members like service accounts and users.
 1. bq.tf - This script is responsible for creating Bigquery dataset.
 1. pg-vector.tf - This is responsible for spinning up the CloudSQL instance, database, username and password.
+1. redis.tf - Creates Memorystore for Redis and a Serverless VPC Access connector for Cloud Run.
 1. embeddings-setup.tf - This script is responsible for the below tasks.
     * Update [config.ini](../config.ini) with values provided in variables.tf / terraform.tfvars.
     * Fetch list of data sources from [data_source_list.csv](../scripts/data_source_list.csv).
@@ -182,6 +183,9 @@ public_ip_address = "XX.XXX.XXX.XXX"
 service_account = "opendataqna@your-project-id.iam.gserviceaccount.com"
 service_name = "opendataqna-v2"
 service_url = "https://opendataqna-xxxxxxxx.a.run.app"
+redis_host = "10.8.0.3"
+redis_port = 6379
+vpc_connector = "opendataqna-v2-redis-connector"
 ```
 Your url to access the frontend is usually in this format: "https://your-project-id.web.app"
 
@@ -213,6 +217,8 @@ This deployment creates all the resources described in the main [README.md](../R
 7. [Cloud Run](https://console.cloud.google.com/run) for backend APIs
 8. A Firestore database for storing chat history
 9. Firebase web app for hosting frontend.
+10. Memorystore for Redis instance for backend caching (optional via `redis_enabled`)
+11. Serverless VPC Access connector for Cloud Run to reach Redis (optional via `redis_enabled`)
 
 ## Troubleshooting Known Issues
 1. #### `pipx: command not found`

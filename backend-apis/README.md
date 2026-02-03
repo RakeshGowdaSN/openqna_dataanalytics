@@ -42,6 +42,22 @@ gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:opend
 
 **Before you start :** Ensure all variables in your config.ini file are correct, especially those for your Postgres instance and BigQuery dataset. If you need to change the Postgres instance or BigQuery dataset values, update the config.ini file before proceeding.   
 
+**Cache (Memorystore/Redis) :** The backend supports optional Redis caching. Configure these environment variables on Cloud Run:
+- `REDIS_HOST` (required to enable cache)
+- `REDIS_PORT` (default: `6379`)
+- `REDIS_CACHE_ENABLED` (default: `true`)
+- `REDIS_DB` (default: `0`)
+- `REDIS_PASSWORD` (optional)
+- `REDIS_SSL` (default: `false`)
+- `CACHE_TTL_METADATA_SECONDS` (default: `3600`)
+- `CACHE_TTL_SQL_SECONDS` (default: `900`)
+- `CACHE_TTL_RESULTS_SECONDS` (default: `300`)
+- `CACHE_LOGGING` (default: `false`, set to `true` to log cache hit/miss)
+
+To bypass cache per request, pass header `X-Cache-Bypass: true` or include `"cache_bypass": true` in the JSON payload.
+
+For Memorystore, Cloud Run needs a Serverless VPC Access connector in the same region and VPC network.
+
 
    The endpoints deployed here are completely customized for the UI built in this demo solution. Feel free to customize the endpoint if needed for different UI/frontend. The gcloud run deploy command create a cloud build that uses the Dockerfile in the OpenDataQnA folder
     

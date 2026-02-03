@@ -15,6 +15,29 @@ resource "google_cloud_run_service" "backend" {
     spec {
       containers {
         image = "us-docker.pkg.dev/cloudrun/container/hello"
+        dynamic "env" {
+          for_each = var.redis_enabled ? {
+            REDIS_HOST                 = google_redis_instance.cache[0].host
+            REDIS_PORT                 = tostring(google_redis_instance.cache[0].port)
+            REDIS_CACHE_ENABLED        = "true"
+            REDIS_SSL                  = "false"
+            CACHE_TTL_DEFAULT_SECONDS  = tostring(var.cache_ttl_default_seconds)
+            CACHE_TTL_METADATA_SECONDS = tostring(var.cache_ttl_metadata_seconds)
+            CACHE_TTL_SQL_SECONDS      = tostring(var.cache_ttl_sql_seconds)
+            CACHE_TTL_RESULTS_SECONDS  = tostring(var.cache_ttl_results_seconds)
+          } : {}
+          content {
+            name  = env.key
+            value = env.value
+          }
+        }
+      }
+      dynamic "vpc_access" {
+        for_each = var.redis_enabled ? [1] : []
+        content {
+          connector = google_vpc_access_connector.redis[0].name
+          egress    = "ALL_TRAFFIC"
+        }
       }
       service_account_name = module.genai_cloudrun_service_account.email
     }
