@@ -24,8 +24,18 @@ import json
 import os
 import logging
 
-from opendataqna import run_pipeline, run_pipeline_stream
+from opendataqna import (
+    generate_uuid,
+    get_all_databases,
+    run_pipeline,
+    run_pipeline_stream,
+    get_kgq,
+    visualize,
+    embed_sql
+)
+from dbconnectors import firestoreconnector
 from utilities.cache import RedisCache, cache_key
+from typing import Dict
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +100,158 @@ class ChatResponse(BaseModel):
     results: List[Any]
     answer: str
     citation: str
+    error: Optional[str] = None
 
+
+class LoginRequest(BaseModel):
+    user_id: str
+
+
+class InitSessionResponse(BaseModel):
+    session_id: str
+
+
+class DatabaseResponse(BaseModel):
+    databases: Dict[str, str]
+
+
+class ExampleRequest(BaseModel):
+    user_grouping: str
+
+
+class VisualizeRequest(BaseModel):
+    session_id: str
+    user_question: str
+    generated_sql: str
+    sql_results: List[Dict[str, Any]]
+
+
+class EmbedSqlRequest(BaseModel):
+    session_id: str
+    user_grouping: str
+    user_question: str
+    generated_sql: str
+
+
+# ============== Login / Session Endpoints ==============
+
+@app.post("/api/login")
+async def login_user(request: LoginRequest):
+    """Login user and fetch chat history from Firestore."""
+    user_id = request.user_id
+    
+    chat_history = firestoreconnector.fetch_user_chats(user_id)
+    
+    grouped_history = {}
+    for msg in chat_history:
+        sess_id = msg.get('session_id', 'unknown')
+        if sess_id not in grouped_history:
+            grouped_history[sess_id] = []
+        grouped_history[sess_id].append(msg)
+    
+    return {
+        "message": "Login successful",
+        "user_id": user_id,
+        "history": grouped_history
+    }
+
+
+@app.get("/api/session", response_model=InitSessionResponse)
+async def create_session():
+    """Generates a new Session ID"""
+    return {"session_id": generate_uuid()}
+
+
+@app.get("/api/databases", response_model=DatabaseResponse)
+async def get_databases(raw_request: Request):
+    """Populates the dropdown/sidebar with available databases."""
+    try:
+        # Cache setup
+        bypass_cache = _should_bypass_cache(raw_request)
+        cache_allowed = CACHE.enabled() and not bypass_cache
+        cache_id = "api_databases"
+        
+        if cache_allowed:
+            cached = CACHE.get_json(cache_id)
+            if cached is not None:
+                _cache_log("cache hit: api_databases")
+                return cached
+        
+        json_groupings, _ = get_all_databases()
+        data = json.loads(json_groupings)
+        # Extract just the schema names as your streamlit app did
+        databases = {
+            item["group_name"]: item["table_schema"]
+            for item in data if isinstance(item, dict)
+        }
+        
+        response_data = {"databases": databases}
+        
+        if cache_allowed:
+            CACHE.set_json(
+                cache_id,
+                response_data,
+                _ttl_seconds("CACHE_TTL_METADATA_SECONDS", 3600),
+            )
+            _cache_log("cache set: api_databases")
+        
+        return response_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/visualize")
+async def visualize_endpoint(request: VisualizeRequest):
+    """Generates the Chart JSON/HTML"""
+    try:
+        # Convert list of dicts back to JSON string as expected by your visualize function
+        results_json_str = json.dumps(request.sql_results)
+        
+        chart_js, invalid = visualize(
+            request.session_id,
+            request.user_question,
+            request.generated_sql,
+            results_json_str
+        )
+        
+        if invalid:
+            raise HTTPException(status_code=400, detail="Could not generate visualization")
+        
+        return chart_js
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/embed_sql")
+async def embed_sql_endpoint(request: EmbedSqlRequest):
+    """Embed a known good SQL query for future reference."""
+    try:
+        embedded, invalid_response = await embed_sql(
+            request.session_id,
+            request.user_grouping,
+            request.user_question,
+            request.generated_sql
+        )
+        
+        if not invalid_response:
+            return {
+                "ResponseCode": 201,
+                "Message": "Example SQL has been accepted for embedding",
+                "SessionID": request.session_id,
+                "Error": ""
+            }
+        else:
+            return {
+                "ResponseCode": 500,
+                "Message": "",
+                "SessionID": request.session_id,
+                "Error": embedded
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== Main Chat Endpoints ==============
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest, raw_request: Request):
