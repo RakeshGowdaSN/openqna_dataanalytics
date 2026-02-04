@@ -37,7 +37,7 @@ from typing import Optional
 
 firebase_admin.initialize_app()
 
-from opendataqna import get_all_databases,get_kgq,generate_sql,embed_sql,get_response,get_results,visualize
+from opendataqna import get_all_databases,get_kgq,generate_sql,embed_sql,get_response,get_response_stream,get_results,visualize
 from dbconnectors import firestoreconnector
 from utilities import USE_SESSION_HISTORY
 from utilities.cache import RedisCache, cache_key
@@ -255,6 +255,44 @@ def getSQLResult():
     return jsonify(responseDict)
 
 
+@app.route("/run_query_stream", methods=["POST"])
+# @jwt_authenticated
+def getSQLResultStream():
+    """Streaming endpoint for run_query - streams the natural language response via SSE."""
+    envelope = str(request.data.decode('utf-8'))
+    envelope = json.loads(envelope)
+
+    user_question = envelope.get('user_question')
+    user_grouping = envelope.get('user_grouping')
+    generated_sql = envelope.get('generated_sql')
+    session_id = envelope.get('session_id')
+
+    result_df, invalid_response = get_results(user_grouping, generated_sql)
+
+    def generate_sse():
+        if invalid_response:
+            yield f"data: {json.dumps({'error': str(result_df)})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        # First send the SQL results as a JSON event
+        yield f"data: {json.dumps({'type': 'results', 'data': result_df.to_json(orient='records')})}\n\n"
+
+        # Then stream the natural language response
+        try:
+            for chunk in get_response_stream(session_id, user_question, result_df.to_json(orient='records')):
+                yield f"data: {json.dumps({'type': 'text', 'data': chunk})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    return Response(generate_sse(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no'
+    })
+
+
 
 
 @app.route("/get_known_sql", methods=["POST"])
@@ -466,6 +504,32 @@ async def getSummary():
     return jsonify(responseDict)
 
 
+@app.route("/summarize_results_stream", methods=["POST"])
+# @jwt_authenticated
+def getSummaryStream():
+    """Streaming endpoint for summarize_results - streams the summary response via SSE."""
+    envelope = str(request.data.decode('utf-8'))
+    envelope = json.loads(envelope)
+
+    user_question = envelope.get('user_question')
+    sql_results = envelope.get('sql_results')
+    session_id = envelope.get('session_id', '')
+
+    def generate_sse():
+        try:
+            for chunk in get_response_stream(session_id, user_question, sql_results):
+                yield f"data: {json.dumps({'type': 'text', 'data': chunk})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    return Response(generate_sse(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no'
+    })
+
+
 
 
 @app.route("/natural_response", methods=["POST"])
@@ -530,7 +594,77 @@ async def getNaturalResponse():
                         "Error":generated_sql
                         }
 
-   return jsonify(responseDict)   
+   return jsonify(responseDict)
+
+
+@app.route("/natural_response_stream", methods=["POST"])
+# @jwt_authenticated
+async def getNaturalResponseStream():
+    """Streaming endpoint for natural_response - end-to-end pipeline with streaming response via SSE."""
+    envelope = str(request.data.decode('utf-8'))
+    envelope = json.loads(envelope)
+
+    user_question = envelope.get('user_question')
+    user_grouping = envelope.get('user_grouping')
+    user_id = envelope.get('user_id')
+    session_id = envelope.get('session_id', '')
+
+    # Generate SQL (non-streaming)
+    generated_sql, session_id, invalid_response = await generate_sql(
+        session_id,
+        user_question,
+        user_grouping,
+        RUN_DEBUGGER,
+        DEBUGGING_ROUNDS,
+        LLM_VALIDATION,
+        Embedder_model,
+        SQLBuilder_model,
+        SQLChecker_model,
+        SQLDebugger_model,
+        num_table_matches,
+        num_column_matches,
+        table_similarity_threshold,
+        column_similarity_threshold,
+        example_similarity_threshold,
+        num_sql_matches,
+        user_id=user_id
+    )
+
+    def generate_sse():
+        nonlocal invalid_response, generated_sql
+
+        if invalid_response:
+            yield f"data: {json.dumps({'error': str(generated_sql)})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        # Send the generated SQL
+        yield f"data: {json.dumps({'type': 'sql', 'data': generated_sql, 'session_id': session_id})}\n\n"
+
+        # Execute SQL and get results
+        result_df, exec_invalid = get_results(user_grouping, generated_sql)
+
+        if exec_invalid:
+            yield f"data: {json.dumps({'error': str(result_df)})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        # Send the SQL results
+        yield f"data: {json.dumps({'type': 'results', 'data': result_df.to_json(orient='records')})}\n\n"
+
+        # Stream the natural language response
+        try:
+            for chunk in get_response_stream(session_id, user_question, result_df.to_json(orient='records')):
+                yield f"data: {json.dumps({'type': 'text', 'data': chunk})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    return Response(generate_sse(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no'
+    })   
 
 
 @app.route("/get_results", methods=["POST"])
