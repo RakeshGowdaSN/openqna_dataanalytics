@@ -74,10 +74,14 @@ def _cache_log(message: str) -> None:
         log.info(message)
         print(f"[CACHE] {message}")
 
-# CORS middleware
+# CORS configuration
+origins = [
+    "http://localhost:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -85,10 +89,10 @@ app.add_middleware(
 
 
 class ChatRequest(BaseModel):
-    session_id: Optional[str] = ""
+    session_id: str
     user_question: str
     user_grouping: str
-    user_id: Optional[str] = "opendataqna-user@google.com"
+    user_id: str
     run_debugger: bool = True
     execute_final_sql: bool = True
     cache_bypass: Optional[bool] = False
@@ -97,7 +101,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     session_id: str
     sql: str
-    results: List[Any]
+    results: List[Dict[str, Any]]  # JSON representation of DataFrame
     answer: str
     citation: str
     error: Optional[str] = None
@@ -307,17 +311,14 @@ async def chat_endpoint(request: ChatRequest, raw_request: Request):
                 return cached
         
         # Call your existing async pipeline
-        # Note: run_pipeline returns (final_sql, results_df, response_text)
-        final_sql, results_df, response_text = await run_pipeline(
+        final_sql, results_df, response_text, citation = await run_pipeline(
             session_id=request.session_id,
             user_question=request.user_question,
             user_grouping=request.user_grouping,
+            user_id=request.user_id,
             RUN_DEBUGGER=request.run_debugger,
             EXECUTE_FINAL_SQL=request.execute_final_sql
         )
-        
-        # Citation placeholder - add your citation logic here if needed
-        citation = ""
 
         if isinstance(results_df, str) and results_df == "Invalid":
             return {
