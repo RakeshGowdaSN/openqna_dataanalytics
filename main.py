@@ -14,11 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 import pandas as pd
 import json
 import os
@@ -35,7 +36,6 @@ from opendataqna import (
 )
 from dbconnectors import firestoreconnector
 from utilities.cache import RedisCache, cache_key
-from typing import Dict
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +154,32 @@ async def login_user(request: LoginRequest):
         "user_id": user_id,
         "history": grouped_history
     }
+
+
+class FetchChatsRequest(BaseModel):
+    user_id: str
+
+
+@app.post("/api/fetch_user_chats")
+async def fetch_user_chats_endpoint(request: FetchChatsRequest):
+    """Fetch all chat sessions for a user from Firestore."""
+    try:
+        user_id = request.user_id
+        chat_history = firestoreconnector.fetch_user_chats(user_id)
+        
+        grouped_history = {}
+        for msg in chat_history:
+            sess_id = msg.get('session_id', 'unknown')
+            if sess_id not in grouped_history:
+                grouped_history[sess_id] = []
+            grouped_history[sess_id].append(msg)
+        
+        return {
+            "user_id": user_id,
+            "chats": grouped_history
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/session", response_model=InitSessionResponse)
@@ -338,14 +364,51 @@ async def chat_endpoint(request: ChatRequest, raw_request: Request):
 async def chat_endpoint_stream(request: ChatRequest, raw_request: Request):
     """Streaming version of the RAG pipeline - streams the natural language response.
     
-    Note: Streaming responses are not cached. Use /api/chat for cached responses.
+    If a cached response exists, it will be streamed as SSE events for consistency.
+    Otherwise, the response is generated and streamed in real-time.
     """
+    
+    # Cache setup (same key as /api/chat for consistency)
+    bypass_cache = _should_bypass_cache(raw_request, request.model_dump())
+    cache_allowed = CACHE.enabled() and not bypass_cache and bool(request.session_id)
+    
+    cache_payload = {
+        "user_question": request.user_question,
+        "user_grouping": request.user_grouping,
+        "user_id": request.user_id,
+        "run_debugger": request.run_debugger,
+        "execute_final_sql": request.execute_final_sql,
+    }
+    cache_id = cache_key("api_chat", cache_payload)
+    
+    # Check cache first
+    cached_response = None
+    if cache_allowed:
+        cached_response = CACHE.get_json(cache_id)
+        if cached_response is not None:
+            _cache_log("cache hit: api_chat_stream")
     
     async def generate_sse():
         try:
             print("request.user_id", request.user_id)
             print("request.session_id", request.session_id)
             
+            # If cached, stream the cached response as SSE events
+            if cached_response is not None:
+                # Stream SQL
+                yield f"data: {json.dumps({'type': 'sql', 'data': cached_response.get('sql', ''), 'session_id': cached_response.get('session_id', '')})}\n\n"
+                
+                # Stream results
+                yield f"data: {json.dumps({'type': 'results', 'data': cached_response.get('results', [])})}\n\n"
+                
+                # Stream answer as a single text chunk
+                yield f"data: {json.dumps({'type': 'text', 'data': cached_response.get('answer', '')})}\n\n"
+                
+                # Done
+                yield "data: [DONE]\n\n"
+                return
+            
+            # Otherwise, stream from the pipeline
             async for chunk in run_pipeline_stream(
                 session_id=request.session_id,
                 user_question=request.user_question,
