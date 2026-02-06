@@ -79,7 +79,7 @@ class RedisCache:
     def set_json(self, key: str, value: Any, ttl_seconds: int) -> None:
         if self._client is None:
             return
-        payload = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+        payload = json.dumps(value, separators=(",", ":"), ensure_ascii=False, default=str)
         if ttl_seconds and ttl_seconds > 0:
             self._client.setex(key, ttl_seconds, payload)
         else:

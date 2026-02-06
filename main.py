@@ -334,6 +334,8 @@ async def chat_endpoint(request: ChatRequest, raw_request: Request):
         if isinstance(results_df, pd.DataFrame):
             # Normalize types (decimals, etc) to be JSON serializable
             results_list = results_df.to_dict(orient='records')
+            # Force non-JSON types (Decimal, etc.) to safe strings
+            results_list = json.loads(json.dumps(results_list, default=str))         
         elif isinstance(results_df, str):
             # Sometimes your code returns an error string instead of a DF
             response_text = f"{response_text}\n\nSystem Message: {results_df}"
@@ -345,6 +347,7 @@ async def chat_endpoint(request: ChatRequest, raw_request: Request):
             "answer": response_text,
             "citation": str(citation)
         }
+        response_data = json.loads(json.dumps(response_data, default=str))
         
         # Store in cache
         if cache_allowed and final_sql and not final_sql.startswith("Error"):
